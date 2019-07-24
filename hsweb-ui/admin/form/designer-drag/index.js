@@ -48,7 +48,9 @@ function initClp(desinger) {
     require(["clipboard.min.js"], function (Clipboard) {
         var clipboard = new Clipboard('.copy-button', {
             text: function (trigger) {
-                return JSON.stringify(desinger.getConfig());
+                var json = JSON.stringify(desinger.getConfig());
+
+                return json;
             }
         });
 
@@ -56,13 +58,17 @@ function initClp(desinger) {
             require(["message"], function (message) {
                 message.showTips("已将配置内容复制到粘贴板");
             });
-            // console.log(e);
+            //console.log(e);
             e.clearSelection();
         });
 
         clipboard.on('error', function (e) {
-            //console.error('Action:', e.action);
-            // console.error('Trigger:', e.trigger);
+            console.error('ERROR:', e);
+            editScript("text", e.text, function (editor) {
+
+            }, function (editor) {
+
+            },"自动复制失败,请手动复制.");
         });
     });
     $(".preview-button").on("click", function () {
@@ -142,7 +148,9 @@ importMiniui(function () {
         "components", "css!defaults", "css!plugin/font-awesome/4.7.0/css/font-awesome.css",
         "css!fonts/iconfont",
         "css!plugin/jquery-ui/jquery-ui.min",
-        'css!designer'], function (Designer, md5, request) {
+        'css!designer'
+        // ,"css!designer-custom"
+    ], function (Designer, md5, request) {
         componentRepo.useIdForName = request.getParameter("useIdForName") === 'true';
 
         var param = request.getParameter("components");
@@ -159,7 +167,7 @@ importMiniui(function () {
 
         require(componentsImport, function () {
             var designer = window.designer = new Designer();
-            window.getDesigner=function () {
+            window.getDesigner = function () {
                 return designer;
             }
             initClp(designer);
@@ -186,7 +194,8 @@ importMiniui(function () {
         window.tools = tools;
         window.message = message;
     });
-    window.editScript = function (lang, script, call, onSubmit) {
+    window.editScript = function (lang, script, call, onSubmit,title) {
+        mini.get("script-editor-window").setTitle(title||"脚本编辑");
         require(['script-editor'], function (editorBuilder) {
             editorBuilder.createEditor("script-editor", function (editor) {
                 editor.init(lang, script);

@@ -229,11 +229,13 @@
             createClass(Hidden);
 
             Hidden.prototype.render = function () {
+                var me = this;
                 var container = this.getContainer(function () {
                     var m = $("<div class='mini-col-12 form-component'>");
-                    var c = $("<fieldset style='border:0px;' class=\"brick\">");
+                    var c = $("<fieldset style='border:0;' class=\"brick\">");
                     var label = $("<legend class='form-hidden' title='渲染时会被移除' style='font-size: 20px'>")
                         .text("占位");
+                    c.css("height", me.getProperty("height").value || 37);
                     c.append(label);
                     m.append(c);
                     return m;
@@ -242,8 +244,7 @@
                     .on('propertiesChanged', function (key, value) {
                         if (key === 'comment') {
                             container.find("legend").text(value);
-                        }
-                        else if (key === 'height') {
+                        } else if (key === 'height') {
                             container.find("fieldset").css("height", value);
                         } else {
                             container.find("legend").attr(key, value);
@@ -434,12 +435,182 @@
             componentRepo.registerComponent("text", Text);
         }
 
+        var logicSupport = {
+            "is": function (s, t) {
+                return (s + "") === (t + "");
+            }, "lt": function (s, t) {
+                return parseFloat(s) < parseFloat(t);
+            }, "gt": function (s, t) {
+                return parseFloat(s) > parseFloat(t);
+            }, "gte": function (s, t) {
+                return parseFloat(s) >= parseFloat(t);
+            }, "lte": function (s, t) {
+                return parseFloat(s) <= parseFloat(t);
+            }
+        };
+
+        var targetSupport = {
+            "value": function (conf, component) {
+                return conf.target;
+            },
+            "component": function (conf, component) {
+                var target = conf.target;
+                if (component.parser) {
+                    var targetComp = component.parser.get(target);
+                    if (targetComp.getValue) {
+                        return targetComp.getValue();
+                    }
+                    if (targetComp.inputId) {
+                        return mini.get(targetComp.inputId).getValue();
+                    }
+                }
+                return null;
+            },
+            "currentTime": function (conf, comp) {
+                return new Date();
+            }
+        };
+
+        /**
+         *  [
+         *          "conditions":[
+         *              {"type":"logic","logic":"=",targetType:"component | value | currentTime",target:"1"}
+         *          ],
+         *          operation: [
+         *              {"type":"component-operation",action:"hide", "target":"user,age"},
+         *              {"type":"show-message","message":"呵呵"},
+         *              {"type":"script","message":"alert(1234)"}
+         *          ]
+         *  ]
+         */
+        var fireSupport = {
+            "conditions": {
+                "logic": function (conf, component) {
+                    var logic = logicSupport[conf.logic];
+                    var target = targetSupport[conf.targetType];
+                    var thisValue = this.value || component.getValue();
+                    var targetValue = target ? target(conf, component) : null;
+
+                    return logic && logic(thisValue, targetValue);
+
+                },
+                "always": function (conf, component) {
+                    return true;
+                },
+                "script": function (conf, component) {
+                    var script = conf.script;
+                    if (script) {
+                        try {
+                            var func = eval("(function(){return function(component,me){" +
+                                "\n" +
+                                script +
+                                "\n" +
+                                "}})()");
+                            return func.call(this, component, component);
+                        } catch (e) {
+                            console.log("执行控件变更事件条件脚本失败", this, e);
+                            return false;
+                        }
+                    }
+                }
+            },
+            "operations": {
+                "component-operation": function (conf, component) {
+                    var target = conf.target;
+                    var action = conf.action;
+                    var targetComponent = function () {
+                        return component.parser ? component.parser.get(target) : null;
+                    }();
+                    if (!targetComponent) {
+                        log.warn("无法获取到要操作的控件:", target, " config:", conf)
+                        return;
+                    }
+                    if (action === 'hide') {
+                        targetComponent.hide();
+                    } else if (action === 'writeAble') {
+                        targetComponent.setReadOnly(false);
+                    } else if (action === 'readonly') {
+                        targetComponent.setReadOnly(true);
+                    } else if (action === 'show') {
+                        targetComponent.show();
+                    } else if (action === 'setValue') {
+                        if (targetComponent.setValue) {
+                            targetComponent.setValue(conf.value);
+                        }
+                    }
+                },
+                "message": function (conf) {
+                    if (window.message) {
+                        message.alert(conf.message);
+                    } else {
+                        require(['message'], function (message) {
+                            message.alert(conf.message);
+                        })
+                    }
+                },
+                "script": function (conf, component) {
+                    var script = conf.script;
+                    if (script) {
+                        try {
+                            var func = eval("(function(){return function(component,me){" +
+                                "\n" +
+                                script +
+                                "\n" +
+                                "}})()");
+                            func.call(this, component, component);
+                        } catch (e) {
+                            console.log("执行控件变更事件操作脚本失败", this, e);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         /**单行文本**/
         function TextBox(id) {
             Component.call(this);
             this.id = id;
             this.properties = createDefaultEditor();
             this.getProperty("comment").value = "单行文本";
+            this.properties.push({
+                id: "onValueChanged",
+                editor: "textbox",
+                text: "值变更事件",
+                script: true,
+                fire: function (component) {
+                    var value = component.getProperty('onValueChanged').value;
+                    var source = this;
+                    if (!value) {
+                        return "";
+                    }
+                    if (typeof value === "string") {
+                        value = JSON.parse(value);
+                    }
+                    $(value).each(function () {
+                        var conf = this;
+                        for (var i = 0; i < conf.conditions.length; i++) {
+                            var condition = conf.conditions[i];
+                            var support = fireSupport.conditions[condition.type];
+                            if (!support || !support.call(source, condition, component)) {
+                                return;
+                            }
+                        }
+                        for (var i = 0; i < conf.operations.length; i++) {
+                            var operation = conf.operations[i];
+                            var support = fireSupport.operations[operation.type];
+                            if (support) {
+                                support.call(source, operation, component);
+                            }
+                        }
+                    });
+
+                },
+                createEditor: function (component, text, value, call) {
+
+                    return "";
+                }
+            })
         }
 
         {
@@ -458,81 +629,156 @@
                     this.container.css("height", height ? height + "px" : "");
                 }
             };
+            TextBox.prototype.setValue = function (value) {
+                this.value = value;
+                var input = mini.get(this.inputId);
+                if (input) {
+                    input.setValue(value);
+                }
+            }
+
+            TextBox.prototype.loadData = function () {
+                var me = this;
+                var optionConfig = this.getProperty("option").value;
+                if (!optionConfig) {
+                    return;
+                }
+
+                var input = mini.get(this.inputId);
+                if (!input) {
+                    mini.parse();
+                    input = mini.get(this.inputId);
+                }
+                var cache = window.optionCache || (window.optionCache = {});
+
+                if (optionConfig.type === 'url') {
+                    input.setTextField(optionConfig.textField || 'text');
+                    input.setValueField(optionConfig.idField || "id");
+                    input.setDataField(optionConfig.dataField || "result.data");
+                    input.setAjaxType(optionConfig.ajaxType || "GET");
+                    if (input.setClearOnLoad) {
+                        input.setClearOnLoad(false);
+                    }
+                    if (input.setParentField)
+                        input.setParentField(optionConfig.parentField || "parentId");
+                    if (input.setResultAsTree)
+                        input.setResultAsTree(optionConfig.resultAsTree || "false");
+                    if (cache[optionConfig.url]) {
+                        input.setData(cache[optionConfig.url]);
+                    } else {
+                        function getProperty(obj, field) {
+                            var fs = field.split(".");
+                            var tmp = obj;
+                            for (var i = 0; i < fs.length; i++) {
+                                var v = fs[i];
+                                if (!tmp) {
+                                    return null;
+                                }
+                                tmp = tmp[v];
+                            }
+                            return tmp;
+                        }
+
+                        require(['request'], function (request) {
+                            request.get(optionConfig.url, function (response) {
+                                if (response.status === 200) {
+                                    var data = getProperty(response, optionConfig.dataField || "result.data");
+                                    if (input.loadList && optionConfig.resultAsTree + "" === 'false') {
+                                        input.loadList(data);
+                                    } else {
+                                        input.setData(data);
+                                    }
+                                    if (me.value) {
+                                        input.setValue(me.value);
+                                    }
+                                }
+                            })
+                        })
+                    }
+                    // input.setUrl(window.API_BASE_PATH + optionConfig.url);
+                } else if (optionConfig.type === 'data') {
+                    input.setData(optionConfig.data);
+                }
+            }
+
+            TextBox.prototype.createInput = function () {
+                var me = this;
+                var container = this.container;
+                var inputId = "I" + (Math.round(Math.random() * 1000000000));
+                me.inputId = inputId;
+                var input = $("<input style='width: 100%;height: 100%'>");
+                input.attr("id", inputId);
+                input.addClass(me.cls || "mini-textbox");
+                $(me.properties).each(function () {
+                    var value = this.getValue ? this.getValue(me) : this.value;
+                    var property = this;
+                    if (this.id) {
+                        if (this.id === 'type') {
+                            return;
+                        }
+                        if (this.id === 'height') {
+                            input.css("height", value);
+                        }
+                        //脚本
+                        if (this.script) {
+                            var scriptId = "script_" + (Math.round(Math.random() * 100000000));
+                            window[scriptId] = function (obj) {
+                                try {
+                                    var func = property.fire ? property.fire :
+                                        eval("(function(){return function(component){" +
+                                            "\n" +
+                                            (property.getScript ? property.getScript : property.value) +
+                                            "\n" +
+                                            "}})()");
+                                    func.call(obj, me);
+                                } catch (e) {
+                                    console.log("执行控件脚本失败", this, e);
+                                    return;
+                                }
+                            };
+                            value = scriptId;
+                        }
+                        //数据选项
+                        if (this.id === 'option') {
+                            var optionConfig = value;
+
+                        } else if (this.id === 'showComment') {
+                            if (this.value + "" === 'true') {
+                                container.find(".form-item")
+                                    .removeClass("hide-comment");
+                            } else {
+                                container.find(".form-item")
+                                    .addClass("hide-comment");
+                            }
+                        } else {
+                            input.attr(this.id, value);
+                        }
+                    }
+                    if (!this.value || this.value === 'undefined') {
+                        input.removeAttr(this.id);
+                    }
+                });
+                return input;
+            }
+
             TextBox.prototype.reload = function () {
                 var container = this.container;
                 var me = this;
 
-                function createInput() {
-                    var input = $("<input style='width: 100%;height: 100%'>");
-                    input.addClass(me.cls || "mini-textbox");
-                    $(me.properties).each(function () {
-                        var value = this.getValue ? this.getValue(me) : this.value;
-                        var property = this;
-                        if (this.id) {
-                            if (this.id === 'type') {
-                                return;
-                            }
-                            if (this.id === 'height') {
-                                input.css("height", value);
-                            }
-                            //脚本
-                            if (this.script) {
-                                var scriptId = "script_" + (Math.round(Math.random() * 100000000));
-                                window[scriptId] = function (obj) {
-                                    try {
-                                        var func = eval("(function(){return function(component){" +
-                                            "\n" +
-                                            property.value +
-                                            "\n" +
-                                            "}})()");
-                                        func.call(obj, me);
-                                    } catch (e) {
-                                        console.log("执行控件脚本失败", this, e);
-                                        return;
-                                    }
-                                };
-                                value = scriptId;
-                            }
-                            //数据选项
-                            if (this.id === 'option') {
-                                var optionConfig = value;
-                                if (optionConfig.type === 'url') {
-                                    input.attr("url", window.API_BASE_PATH + optionConfig.url);
-                                    input.attr("textField", optionConfig.textField || 'text');
-                                    input.attr("valueField", optionConfig.idField || "id");
-                                    input.attr("dataField", optionConfig.dataField || "result.data");
-                                    input.attr("ajaxType", optionConfig.ajaxType || "GET");
-                                    input.attr("parentField", optionConfig.parentField || "parentId");
-                                    input.attr("resultAsTree", optionConfig.resultAsTree || "false");
-                                } else if (optionConfig.type === 'data') {
-                                    if (!window.optionalData) {
-                                        window.optionalData = {};
-                                    }
-                                    var id = "optional_" + Math.round(Math.random() * 10000);
-                                    window.optionalData[id] = optionConfig.data;
-                                    value = "window.optionalData." + id;
-                                    input.attr("data", value);
-                                }
-                            } else {
-                                input.attr(this.id, value);
-                            }
-                        }
-                        if (!this.value || this.value === 'undefined') {
-                            input.removeAttr(this.id);
-                        }
-                    });
-                    return input;
-                }
-
                 function newInput() {
                     return container.find(".component-body")
                         .html("")
-                        .append(createInput());
+                        .append(me.createInput());
                 }
 
-                // console.log(me);
                 newInput();
-            };
+                mini.parse();
+                if (me.loadData) {
+                    window.setTimeout(function () {
+                        me.loadData();
+                    }, 50);
+                }
+            }
 
             TextBox.prototype.render = function () {
                 var me = this;
@@ -558,13 +804,13 @@
                 }
                 this.un("propertiesChanged")
                     .on('propertiesChanged', function (name, value) {
-                        container.find('.form-label').first().css("display", "block");
+                        container.find('.form-label').first().css("display", "");
                         if (name === 'comment') {
-                            container.find(".form-label").text(value);
-                        } else if (name === 'bodyHeight') {
-                            container.find(".input-block").css("height", value);
-                        }
-                        else if (name === 'showComment') {
+                            value = value.replace(/( )/g, "<span style='space'></span>");
+                            value = value.replace(/(\*)/g, "<span class='star'>*</span>");
+                            container.find(".form-label").html(value);
+                        } else if (name === 'showComment') {
+                            container.find(".input-block").addClass("component-body");
                             if (value + "" === 'true') {
                                 container.find(".form-label").show();
                                 container.find(".component-body").addClass("input-block");
@@ -572,6 +818,8 @@
                                 container.find(".form-label").hide();
                                 container.find(".component-body").removeClass("input-block");
                             }
+                        } else if (name === 'bodyHeight') {
+                            container.find(".input-block").css("height", value);
                         } else {
                             me.reload();
                         }
@@ -594,30 +842,6 @@
 
                 this.cls = "mini-textarea";
                 this.formText = true;
-                // this.properties.push(
-                //     {
-                //         id: "bodyHeight",
-                //         text: "控件高度",
-                //         value: "50",
-                //         comment: "设置为最小值,高度为自动",
-                //         createEditor: function (component, text, value, call) {
-                //             var html = $("<div style='margin-left: 4px;position: relative;top: 9px;width: 92%'>");
-                //             html.slider({
-                //                 orientation: "horizontal",
-                //                 range: "min",
-                //                 min: 48,
-                //                 max: 400,
-                //                 value: parseInt(value),
-                //                 slide: function () {
-                //                     if (call) call();
-                //                     component.setProperty("bodyHeight", parseInt(arguments[1].value));
-                //                     mini.parse();
-                //                 }
-                //             });
-                //             return html;
-                //         }
-                //     }
-                // );
             }
 
             createClass(TextArea, TextBox);
@@ -709,10 +933,10 @@
                 // });
             }
 
+            createClass(Combobox, TextBox);
+
             Combobox.icon = "iconfont icon-xialakongjian";
             Combobox.prototype.typeName = "下拉列表";
-
-            createClass(Combobox, TextBox);
 
 
             componentRepo.registerComponent("combobox", Combobox);
@@ -734,10 +958,11 @@
                 this.getProperty("comment").value = "日期选择";
             }
 
+            createClass(Datepicker, TextBox);
+
             Datepicker.prototype.typeName = "日期选择";
 
             Datepicker.icon = "iconfont icon-riqixuanze";
-            createClass(Datepicker, TextBox);
 
             componentRepo.registerComponent("datepicker", Datepicker);
         }
@@ -803,6 +1028,63 @@
 
             createClass(FileUpload);
 
+
+            FileUpload.prototype.setValue = function (file) {
+                this.value = file;
+                this.getValue = function () {
+                    return file;
+                }
+            }
+            FileUpload.prototype.setReadOnly = function (readOnly) {
+                this.readOnly = readOnly;
+                var container = this.container;
+                this.initFileUploader();
+
+            };
+            FileUpload.prototype.initFileUploader = function () {
+                var container = this.container;
+                var uploaderContainer = container.find('.file-upload');
+                var id = uploaderContainer.attr("id");
+                var readOnly = this.readOnly;
+                var me = this;
+
+                function initUploader(uploader) {
+                    uploaderContainer
+                        .html(readOnly ? "预览文件" : "选择文件");
+                    if (!readOnly) {
+                        uploaderContainer.removeClass('webuploader-container');
+                        uploader.initUploader("#" + id, function (file) {
+                            uploaderContainer
+                                .find(".webuploader-pick")
+                                .html("上传成功");
+                            me.getValue = function () {
+                                return file;
+                            }
+                        }, true);
+                    } else {
+                        uploaderContainer.addClass("webuploader-pick");
+
+                        uploaderContainer.unbind("click")
+                            .on("click", function () {
+                                if (me.onViewFile) {
+                                    me.onViewFile(me.getValue());
+                                } else {
+                                    if (me.getValue()) {
+                                        window.open(me.getValue())
+                                    }
+                                }
+                            })
+                    }
+                }
+
+                if (window.require) {
+                    require(["pages/form/designer-drag/file-upload"], function (uploader) {
+                        initUploader(uploader);
+                    })
+                } else {
+                    initUploader(FileUploader);
+                }
+            };
             FileUpload.prototype.typeName = "文件上传";
             FileUpload.prototype.render = function () {
                 var me = this;
@@ -823,12 +1105,12 @@
                     }
                     var label = $("<label class=\"form-label\">");
                     var inputContainer = $("<div class=\"input-block\">");
-                    var input = createInput();
+                    // var input = createInput();
                     var id = Math.round(Math.random() * 100000000);
                     var button = $("<div class='file-upload' style='height: 30px; float: left'>")
                         .attr("id", "file-" + id)
                         .text("选择文件");
-                    var process = $("<div class='process' style='width: 80%'>");
+                    //  var process = $("<div class='process' style='width: 80%'>");
 
                     label.text(me.getProperty("comment").value);
                     c.append(label).append(inputContainer.append(button));
@@ -836,33 +1118,8 @@
                     return m;
                 });
 
-                function initFileUploader() {
-                    var uploaderContainer = container.find('.file-upload');
-                    var id = uploaderContainer.attr("id");
 
-                    function initUploader(uploader) {
-                        uploaderContainer
-                            .removeClass('webuploader-container')
-                            .html("选择文件");
-                        uploader.initUploader("#" + id, function (file) {
-                            me.getValue = function () {
-                                return file;
-                            }
-                        }, true);
-                    }
-
-                    if (window.require) {
-                        require(["pages/form/designer-drag/file-upload"], function (uploader) {
-                            initUploader(uploader);
-
-                        })
-                    } else {
-                        initUploader(FileUploader);
-                    }
-
-                }
-
-                initFileUploader();
+                me.initFileUploader();
 
                 function newInput() {
                     return container.find(".input-block")
@@ -874,8 +1131,7 @@
                     .on('propertiesChanged', function (name, value) {
                         if (name === 'comment') {
                             container.find(".form-label").text(value);
-                        }
-                        else if (name === 'showComment') {
+                        } else if (name === 'showComment') {
                             container.find(".input-block").addClass("component-body");
                             if (value + "" === 'true') {
                                 container.find(".form-label").show();
@@ -949,7 +1205,7 @@
             this.id = id;
             this.properties = createDefaultEditor();
             this.removeProperty("placeholder");
-            this.removeProperty("name");
+            // this.removeProperty("name");
             this.removeProperty("required");
             this.removeProperty("emptyText");
             this.removeProperty("showComment");
@@ -964,17 +1220,65 @@
 
         createClass(Form, Component, "高级控件");
 
+        Form.prototype.getValue = function (data, validate) {
+            var me = this;
+            var form = new mini.Form("#" + this.id);
+            form.validate();
+            if (validate && form.isValid() === false) {
+                return;
+            }
+            var data = form.getData(false);
+            me.container.children().select("[hs-id]")
+                .each(function () {
+                    var target = me.parser.get($(this).attr("hs-id"));
+                    if (target === me) {
+                        return;
+                    }
+                    if (target && target.getValue) {
+                        var nameProperty = target.getProperty("name");
+                        var value = nameProperty.getValue ? nameProperty.getValue(target) : nameProperty.value;
+                        data[value] = target.getValue(data, validate);
+                    }
+                });
+            return data;
+        };
+
+        Form.prototype.setValue = function (value, data) {
+            var me = this;
+            var form = new mini.Form("#" + this.id);
+            form.setData(value);
+            me.container.children().select("[hs-id]")
+                .each(function () {
+                    var target = me.parser.get($(this).attr("hs-id"));
+                    if (target === me) {
+                        return;
+                    }
+                    if (target && target.setValue) {
+                        var name = target.getProperty('name').value;
+                        if (name) {
+                            var nestName = name.split(".");
+                            var val = value;
+                            for (var i = 0; i < nestName.length; i++) {
+                                val = val[nestName[i]];
+                            }
+                            target.setValue(val, data);
+                        }
+                    }
+                });
+        };
+
+
         Form.prototype.setHeight = function (height) {
             if (!height || height <= 1) {
                 height = "";
             }
             this.setProperty("bodyHeight", height);
-        }
+        };
         Form.prototype.typeName = "子表单";
         Form.prototype.render = function () {
             var me = this;
             var container = this.getContainer(function () {
-                var m = $("<div class='mini-col-12 form-component'>");
+                var m = $("<div class='mini-col-12 form-component child-form-component'>");
                 var c = $("<fieldset class=\"brick child-form\">");
                 var label = $("<legend title='渲染时会被移除' style='font-size: 20px'>");
                 var text = $("<span>").text("子表单");
@@ -984,12 +1288,13 @@
                 m.append(c);
                 return m;
             });
+            container.attr("id", me.id);
+
             this.un("propertiesChanged")
                 .on('propertiesChanged', function (key, value) {
                     if (key === 'comment') {
                         container.find("legend").text(value);
-                    }
-                    else if (key === 'bodyHeight') {
+                    } else if (key === 'bodyHeight') {
                         container.find("fieldset:first").css("height", value);
                     } else if (key === 'hidden') {
                         if (value === 'false') {
@@ -1014,12 +1319,26 @@
             this.id = id;
             this.properties = createDefaultEditor();
             this.removeProperty("placeholder");
-            this.removeProperty("name");
+            // this.getProperty("name").hide;
             this.removeProperty("required");
             this.removeProperty("placeholder");
             this.getProperty("comment").value = "表格表单";
             this.getProperty("width").value = "12";
             this.getProperty("height").value = 200;
+            this.properties.push({
+                id: "title-align",
+                editor: "combobox",
+                text: "标题位置",
+                value: "center",
+                createEditor: function (component, text, value) {
+                    var checkbox = $("<input class='mini-combobox' name='title-align' value='" + value + "'>");
+                    checkbox.attr("data", JSON.stringify([
+                        {id: "left", text: "左"},
+                        {id: "center", text: "中"},
+                        {id: "right", text: "右"}]));
+                    return checkbox;
+                }
+            })
         }
 
         createClass(Table, Component, "高级控件");
@@ -1029,32 +1348,94 @@
                 height = "";
             }
             this.setProperty("bodyHeight", height);
-        }
+        };
+        Table.prototype.getValue = function (data, validate) {
+            var me = this;
+            var form = new mini.Form("#" + this.id);
+            form.validate();
+            if (validate && form.isValid() === false) {
+                return;
+            }
+            var data = form.getData(false);
+            me.container.children().select("[hs-id]")
+                .each(function () {
+                    var target = me.parser.get($(this).attr("hs-id"));
+                    if (target === me) {
+                        return;
+                    }
+                    if (target && target.getValue) {
+                        var nameProperty = target.getProperty("name");
+                        var value = nameProperty.getValue ? nameProperty.getValue(target) : nameProperty.value;
+                        data[value] = target.getValue(data, validate);
+                    }
+                });
+            return data;
+        };
+
+        Table.prototype.setValue = function (value, data) {
+            var me = this;
+            var form = new mini.Form("#" + this.id);
+            form.setData(value);
+            me.container.children().select("[hs-id]")
+                .each(function () {
+                    var target = me.parser.get($(this).attr("hs-id"));
+                    if (target === me) {
+                        return;
+                    }
+                    if (target && target.setValue) {
+                        var name = target.getProperty('name').value;
+                        if (name) {
+                            var nestName = name.split(".");
+                            var val = value;
+                            for (var i = 0; i < nestName.length; i++) {
+                                val = val[nestName[i]];
+                            }
+                            target.setValue(val, data);
+                        }
+                    }
+                });
+        };
+
         Table.prototype.render = function () {
             var me = this;
             var container = this.getContainer(function () {
-                var m = $("<div class='mini-col-12 form-component'>");
+                var m = $("<div class='mini-col-12 form-component child-form-component'>");
                 var c = $("<fieldset style='border: 0;' class=\"brick child-form\">");
-                var label = $("<legend align='center' title='表格表单' style='font-size: 20px'>");
-                var text = $("<span>").text("表格表单");
+                var label = $("<legend title='表格表单' style='font-size: 20px;padding: 0;width: 100%'>");
+                var text = $("<div class='child-form-title' style=\"width:100%;text-align:center;\">表格表单</div>").text("表格表单");
+
+                text.css("text-align", me.getProperty("title-align").value);
                 c.append(label.append(text));
                 c.append($("<div class='components table'>")
                     .css("height", me.getProperty("height").value + "px"));
                 m.append(c);
                 return m;
             });
+            container.attr("id", me.id);
+
             this.un("propertiesChanged")
                 .on('propertiesChanged', function (key, value) {
+                    container.addClass("child-form-component");
+                    container.find("legend:first").css({
+                        "font-size": "20px",
+                        "padding": "0",
+                        "width": "100%"
+                    });
                     if (key === 'comment') {
-                        container.find("legend:first").text(value);
+                        var text = $("<div class='child-form-title' style=\"width:100%;text-align:center;\"></div>").text(value);
+                        text.css("text-align", me.getProperty("title-align").value);
+
+                        container.find("legend:first")
+                            .html(text);
+                    } else if (key === 'title-align') {
+                        container.find(".child-form-title:first").css("text-align", value);
                     } else if (key === 'showComment') {
                         if (value + "" === 'false') {
                             container.find("legend:first").addClass('form-hidden');
                         } else {
                             container.find("legend:first").removeClass('form-hidden');
                         }
-                    }
-                    else if (key === 'bodyHeight') {
+                    } else if (key === 'bodyHeight') {
                         container.find(".table:first").css("height", value);
                     } else {
                         container.find("legend:first").attr(key, value);
@@ -1129,8 +1510,7 @@
                         } else {
                             container.find("legend:first").removeClass('form-hidden');
                         }
-                    }
-                    else if (key === 'bodyHeight') {
+                    } else if (key === 'bodyHeight') {
                         container.find(".table:first").css("height", value);
                     } else {
                         reinitTable();

@@ -18,9 +18,27 @@
         if (supportComponents[type]) {
             var component = this.components[id] = new supportComponents[type](id);
             component.parser = this;
+            component._uid = id;
+            if (componentRepo.useIdForName) {
+                this.components[id].getProperty("name").value = id;
+            }
             return component;
         }
         return undefined;
+    };
+    Designer.prototype.get = function (id) {
+        return this.getComponent(function (comp) {
+            return comp.id === id || comp._uid === id;
+        })
+    };
+
+    Designer.prototype.getComponent = function (call) {
+        for (var i = 0; i < this.components.length; i++) {
+            if (call(this.components[i].target)) {
+                return this.components[i].target;
+            }
+        }
+        return null;
     };
     Designer.prototype.setReadOnly = function (readOnly) {
 
@@ -43,22 +61,27 @@
     Designer.prototype.setConfig = function (config) {
 
     };
-    Designer.prototype.clear=function () {
+    Designer.prototype.clear = function () {
         this.loadConfig({});
     }
     Designer.prototype.getConfig = function () {
         var config = {};
-        config.html = this.getHtml();
+
         config.javascript = this.javascript;
         config.css = this.css;
         config.useIdForName = componentRepo.useIdForName;
         var components = [];
-        var html = $("<div>").html(config.html);
+        var html = $("<div>").html( this.getHtml());
+        html.find(".mini-button .ui-sortable-handle").remove();
+
         for (var id in this.components) {
             var container = html.find("[hs-id=" + id + "]");
+            if (componentRepo.useIdForName) {
+                this.components[id].getProperty("name").value = id;
+            }
             var component = jQuery.extend({}, this.components[id]);
-            if (container.length === 0 || component.removed) {
-                component.container.remove();
+            if (container.length === 0 || component.removed===true) {
+                container.remove();
                 continue;
             }
             delete component.container;
@@ -66,6 +89,7 @@
             delete component.parser;
             components.push(component);
         }
+        config.html =html[0].innerHTML;
         config.components = components;
         return config;
     };
@@ -145,6 +169,9 @@
 
             $(components).each(function () {
                 var id = this.id;
+                if (!this._uid) {
+                    this._uid = id;
+                }
                 var container = html.find("[hs-id=" + id + "]");
                 if (container.length === 0) {
                     return;
@@ -160,17 +187,33 @@
                 realComponent.container = container;
                 realComponent.render();
                 realComponent.config = component.config;
-
+                var reload = realComponent.reload ? function () {
+                    return realComponent.reload();
+                } : undefined;
                 $(component.properties)
                     .each(function () {
-                        realComponent.setProperty(this.id, this.value,true);
+                        if (reload) {
+                            realComponent.getProperty(this.id).value = this.value;
+                        } else {
+                            realComponent.setProperty(this.id, this.value, true);
+                        }
                     });
-                initEvent(realComponent);
+                if (reload) {
+                    reload();
+                }
+                window.setTimeout(function () {
+                    initEvent(realComponent);
+                }, 1);
             });
             $(".main-panel").html("").append(html.children());
-            initDroppable();
-            reloadMiniui();
-            initComponentList();
+            window.setTimeout(function () {
+                initDroppable();
+                reloadMiniui();
+                initComponentList();
+                $(".main-panel").find(".mini-button.ui-sortable-handle").remove();
+
+            }, 1);
+
         };
         me.insertComponent = function (type) {
             var component = newComponent(type);
@@ -179,8 +222,10 @@
             } else {
                 $(".main-panel").append(component.render());
             }
-            reloadMiniui();
-            initComponentList();
+            setTimeout(function () {
+                reloadMiniui();
+                initComponentList();
+            }, 10);
             return component;
         };
 
@@ -274,7 +319,7 @@
 
                 var div = $("<div style='width: 100%; position: relative;' class='component'>")
                     .attr("hs-type", component.componentName);
-                var a = $("<a class='mini-button' style='border-left: 0;border-right: 0;padding: 0 border-top: 0;text-align: left; max-width: 100%; width: 100%; height: 60px;line-height: 60px;font-size:1em;'>")
+                var a = $("<a class='mini-button' style='border-left: 0;border-right: 0;padding: 0 border-top: 0;text-align: left; display:block; margin: 8px; height: 48px;line-height: 48px;font-size:16px;'>")
                 // .attr("iconCls",component.icon)
                     .html("<span style='margin-left: 1em'></span><b class='" + component.icon + "'></b><span style='margin-left: 1em'></span>" + componentObj.getProperty("comment").value);
                 div.append(a);
@@ -312,6 +357,7 @@
             var cache = {};
 
             function initDroppable() {
+                var droping=false;
                 $(".components")
                     .sortable({
                         // revert:"valid",
@@ -320,7 +366,7 @@
                         }, start: function (event, ui) {
                             var item = ui.item;
                             var type = item.attr("hs-type");
-                            if (type) {
+                            if (type&&!droping) {
                                 item.css("width", "100%");
                                 var component = newComponent(type);
                                 var html = component.getContainer();
@@ -330,13 +376,17 @@
                                 // initPropertiesEditor(component);
                                 me.doEvent("configChanged", me);
                                 me.nowEditComponent = component;
-                                mini.parse();
+                                window.setTimeout(function () {
+                                    mini.parse();
+                                }, 1);
                                 if (component.onInit) {
                                     component.onInit();
                                 }
                             }
+                            droping=true;
                             // initDroppable();
                         }, stop: function (event, ui) {
+                            droping=false;
                             var item = ui.item;
                             var type = item.attr("hs-type");
                             if (type) {
@@ -344,7 +394,9 @@
                                 item.replaceWith(children);
                                 initDroppable();
                                 children.find('.form-label,legend,input,.component-info,.edit-on-focus').first().click();
-                                initComponentList();
+                                window.setTimeout(function () {
+                                    initComponentList();
+                                }, 1)
                             }
                         },
                         connectWith: ".component"
